@@ -1,13 +1,15 @@
 package org.example.tgmail;
 
-import org.example.tgmail.PropertiesProvider;
-import org.example.tgmail.MailFetcher;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
+import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
+import java.io.ByteArrayInputStream;
 import java.util.List;
 
 /**
@@ -26,7 +28,7 @@ public class MailBotConfig extends TelegramLongPollingBot {
     }
 
     // Spring вызывает этот метод по расписанию
-    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString = "${mail.poll-interval-seconds:60}000")
+    @Scheduled(fixedDelayString = "${mail.poll-interval-seconds:60}000")
     public void checkMailAndForward() {
         try {
             List<EmailMessage> emails = fetcher.fetchNewEmails();
@@ -39,31 +41,33 @@ public class MailBotConfig extends TelegramLongPollingBot {
     }
 
     private void sendEmail(EmailMessage email) {
+        String chatId = props.telegramChatId();
         try {
-            String chatId = props.telegramChatId();
-            System.out.println(">>> CHAT_ID_FROM_PROPS = [" + chatId + "]");
-
+            // 1. текст письма
             SendMessage message = SendMessage.builder()
-                .chatId(props.telegramChatId())
+                .chatId(chatId)
                 .text(formatEmail(email))
                 .parseMode("HTML")
                 .build();
-
-            System.out.println(">>> DEBUG before execute, chatId=" + chatId);
             execute(message);
-            // Точка расширения для вложений — здесь добавим sendPhoto/sendDocument.
-        }  catch (TelegramApiException e) {
-            System.err.println("Не удалось отправить сообщение: " + e.getMessage());
 
-            // Если это запрос к Telegram API, попробуем вытащить ответ сервера
-            if (e instanceof org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException) {
-                org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException re =
-                    (org.telegram.telegrambots.meta.exceptions.TelegramApiRequestException) e;
-                System.err.println("Код ошибки Telegram: " + re.getErrorCode());
-                System.err.println("Текст от Telegram: " + re.getApiResponse());
+            // 2. вложения (любые типы как документы)
+            for (Attachment att : email.getAttachments()) {
+                ByteArrayInputStream bais = new ByteArrayInputStream(att.getData());
+                InputFile file = new InputFile(bais, att.getFilename());
+
+                SendDocument doc = SendDocument.builder()
+                    .chatId(chatId)
+                    .document(file)
+                    .caption(att.getFilename())
+                    .build();
+
+                execute(doc);
             }
 
-            e.printStackTrace(); // временно, чтобы увидеть всё
+        } catch (TelegramApiException e) {
+            System.err.println("Не удалось отправить сообщение: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -117,6 +121,6 @@ public class MailBotConfig extends TelegramLongPollingBot {
 
     @Override
     public void onUpdateReceived(Update update) {
-        // Входящие команды не обязательны — по желанию добавим /start позже.
+        // Пока игнорируем входящие апдейты
     }
 }

@@ -17,6 +17,18 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
+import jakarta.mail.*;
+import jakarta.mail.Flags;
+import jakarta.mail.Multipart;
+import jakarta.mail.Part;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeUtility;
+import org.springframework.stereotype.Component;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.*;
+
 /**
  * Читает новые (непрочитанные) письма из ящика по IMAP.
  * Оформлен как Spring-компонент, свойства берёт из {@link PropertiesProvider}.
@@ -56,7 +68,8 @@ public class MailFetcher {
                     if (msg.isSet(Flags.Flag.SEEN) || processedIds.contains(messageId(msg))) {
                         continue;
                     }
-                    result.add(toEmailMessage(msg));
+                    EmailMessage email = toEmailMessage(msg);
+                    result.add(email);
                     processedIds.add(messageId(msg));
                 }
             }
@@ -65,32 +78,37 @@ public class MailFetcher {
     }
 
     private EmailMessage toEmailMessage(Message msg) throws Exception {
-        // ТЕМА
+        // ===== ТЕМА =====
         String rawSubject = msg.getSubject();
         String subject = (rawSubject == null) ? "(без темы)" : decode(rawSubject);
 
-        // ОТПРАВИТЕЛЬ
-        jakarta.mail.Address[] fromArr = msg.getFrom();
+        // ===== ОТПРАВИТЕЛЬ =====
+        Address[] fromArr = msg.getFrom();
         String from;
-
         if (fromArr == null || fromArr.length == 0) {
             from = "(неизвестно)";
         } else {
             InternetAddress ia = (InternetAddress) fromArr[0];
-            String personal = ia.getPersonal();   // отображаемое имя
-            String email = ia.getAddress();       // адрес
-
+            String personal = ia.getPersonal();
+            String email = ia.getAddress();
             if (personal != null && !personal.isBlank()) {
-                // имя тоже может быть в виде =?utf-8?B?...?
-                String decodedName = decode(personal);
-                from = decodedName + " <" + email + ">";
+                from = decode(personal) + " <" + email + ">";
             } else {
                 from = email;
             }
         }
 
-        EmailMessage email = new EmailMessage(subject, from, getBody(msg));
-        return email;
+        // ===== ТЕЛО =====
+        String body = getBody(msg);
+
+        // ===== ВЛОЖЕНИЯ =====
+        List<Attachment> attachments = getAttachments(msg);
+
+        EmailMessage emailMessage = new EmailMessage(subject, from, body);
+        for (Attachment a : attachments) {
+            emailMessage.addAttachment(a);
+        }
+        return emailMessage;
     }
 
     private String getBody(Message msg) throws Exception {
@@ -100,16 +118,19 @@ public class MailFetcher {
         }
         if (content instanceof Multipart) {
             Multipart mp = (Multipart) content;
+
+            // Сперва text/plain
             for (int i = 0; i < mp.getCount(); i++) {
-                jakarta.mail.BodyPart part = mp.getBodyPart(i);
+                BodyPart part = mp.getBodyPart(i);
                 String ct = part.getContentType() == null ? "" : part.getContentType();
                 if (ct.toLowerCase().startsWith("text/plain")) {
                     Object p = part.getContent();
                     if (p instanceof String) return (String) p;
                 }
             }
+            // Потом text/html
             for (int i = 0; i < mp.getCount(); i++) {
-                jakarta.mail.BodyPart part = mp.getBodyPart(i);
+                BodyPart part = mp.getBodyPart(i);
                 String ct = part.getContentType() == null ? "" : part.getContentType();
                 if (ct.toLowerCase().startsWith("text/html")) {
                     Object p = part.getContent();
@@ -118,6 +139,56 @@ public class MailFetcher {
             }
         }
         return "(вложение / без текста)";
+    }
+
+    private List<Attachment> getAttachments(Message msg) throws Exception {
+        List<Attachment> list = new ArrayList<>();
+
+        Object content = msg.getContent();
+        if (!(content instanceof Multipart)) {
+            return list;
+        }
+
+        Multipart mp = (Multipart) content;
+        for (int i = 0; i < mp.getCount(); i++) {
+            BodyPart part = mp.getBodyPart(i);
+
+            String disp = part.getDisposition();
+            String ct = part.getContentType() == null ? "" : part.getContentType().toLowerCase();
+
+            boolean isAttachment =
+                Part.ATTACHMENT.equalsIgnoreCase(disp) ||
+                    (Part.INLINE.equalsIgnoreCase(disp) && !ct.startsWith("text/"));
+
+            if (!isAttachment) {
+                continue;
+            }
+
+            String filename = part.getFileName();
+            if (filename != null) {
+                filename = decode(filename);
+            } else {
+                filename = "attachment-" + i;
+            }
+
+            String mimeType = part.getContentType();
+            byte[] data = readAllBytes(part.getInputStream());
+
+            list.add(new Attachment(filename, mimeType, data));
+        }
+
+        return list;
+    }
+
+    private byte[] readAllBytes(InputStream in) throws Exception {
+        try (in; ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = in.read(buf)) != -1) {
+                baos.write(buf, 0, r);
+            }
+            return baos.toByteArray();
+        }
     }
 
     private String messageId(Message msg) {
