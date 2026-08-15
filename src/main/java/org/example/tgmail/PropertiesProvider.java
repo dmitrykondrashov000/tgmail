@@ -37,6 +37,7 @@ public class PropertiesProvider {
         this.mailUser = mailUser;
         this.mailPassword = mailPassword;
         this.pollIntervalSeconds = pollIntervalSeconds;
+        System.out.println(">>> PROPS.telegramChatId = [" + telegramChatId + "]");
     }
 
     public String telegramToken()      { return telegramToken; }

@@ -68,10 +68,34 @@ public class MailBotConfig extends TelegramLongPollingBot {
     }
 
     private String formatEmail(EmailMessage email) {
-        String subject = escape(email.getSubject());
         String from = escape(email.getFrom());
+        String subject = escape(email.getSubject());
         String body = escape(email.getBody());
-        return "📧 <b>" + subject + "</b>\n👤 " + from + "\n\n" + body;
+
+        StringBuilder sb = new StringBuilder();
+
+        // 1. Отправитель
+        if (!from.isBlank()) {
+            sb.append("<b>От:</b> ").append(from).append("\n");
+        } else {
+            sb.append("<b>От:</b> (неизвестно)\n");
+        }
+
+        // 2. Тема
+        if (!subject.isBlank()) {
+            sb.append("<b>Тема:</b> ").append(subject).append("\n\n");
+        } else {
+            sb.append("<b>Тема:</b> (без темы)\n\n");
+        }
+
+        // 3. Тело
+        if (!body.isBlank()) {
+            sb.append(body);
+        } else {
+            sb.append("(пустое тело письма)");
+        }
+
+        return sb.toString();
     }
 
     private String escape(String s) {

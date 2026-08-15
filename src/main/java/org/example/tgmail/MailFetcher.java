@@ -1,5 +1,6 @@
 package org.example.tgmail;
 
+import jakarta.mail.internet.InternetAddress;
 import org.example.tgmail.PropertiesProvider;
 import org.springframework.stereotype.Component;
 import jakarta.mail.Folder;
@@ -64,16 +65,31 @@ public class MailFetcher {
     }
 
     private EmailMessage toEmailMessage(Message msg) throws Exception {
-        String subject = msg.getSubject();
-        subject = (subject == null) ? "(без темы)" : decode(subject);
+        // ТЕМА
+        String rawSubject = msg.getSubject();
+        String subject = (rawSubject == null) ? "(без темы)" : decode(rawSubject);
 
+        // ОТПРАВИТЕЛЬ
         jakarta.mail.Address[] fromArr = msg.getFrom();
-        String from = (fromArr == null || fromArr.length == 0) ? "(неизвестно)"
-            : fromArr[0].toString();
+        String from;
+
+        if (fromArr == null || fromArr.length == 0) {
+            from = "(неизвестно)";
+        } else {
+            InternetAddress ia = (InternetAddress) fromArr[0];
+            String personal = ia.getPersonal();   // отображаемое имя
+            String email = ia.getAddress();       // адрес
+
+            if (personal != null && !personal.isBlank()) {
+                // имя тоже может быть в виде =?utf-8?B?...?
+                String decodedName = decode(personal);
+                from = decodedName + " <" + email + ">";
+            } else {
+                from = email;
+            }
+        }
 
         EmailMessage email = new EmailMessage(subject, from, getBody(msg));
-        // Точка расширения для вложений:
-        // parseAttachments(msg, email);
         return email;
     }
 
