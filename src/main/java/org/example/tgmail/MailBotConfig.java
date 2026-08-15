@@ -43,32 +43,52 @@ public class MailBotConfig extends TelegramLongPollingBot {
     private void sendEmail(EmailMessage email) {
         String chatId = props.telegramChatId();
         try {
-            // 1. текст письма
-            SendMessage message = SendMessage.builder()
-                .chatId(chatId)
-                .text(formatEmail(email))
-                .parseMode("HTML")
-                .build();
-            execute(message);
+            List<Attachment> atts = email.getAttachments();
 
-            // 2. вложения (любые типы как документы)
-            for (Attachment att : email.getAttachments()) {
-                ByteArrayInputStream bais = new ByteArrayInputStream(att.getData());
-                InputFile file = new InputFile(bais, att.getFilename());
-
-                SendDocument doc = SendDocument.builder()
+            if (atts.isEmpty()) {
+                // --- нет вложений: обычное текстовое сообщение ---
+                SendMessage message = SendMessage.builder()
                     .chatId(chatId)
-                    .document(file)
-                    .caption(att.getFilename())
+                    .text(formatEmail(email))
+                    .parseMode("HTML")
                     .build();
+                execute(message);
+            } else {
+                // --- есть вложения: первую шлём с caption, текст отдельно не посылаем ---
+                String caption = formatEmail(email); // тот же формат: От/Тема/Тело
 
-                execute(doc);
+                // первое вложение — с подписью
+                Attachment first = atts.get(0);
+                sendDocumentWithCaption(chatId, first, caption);
+
+                // остальные вложения — без подписи
+                for (int i = 1; i < atts.size(); i++) {
+                    sendDocumentWithCaption(chatId, atts.get(i), null);
+                }
             }
 
         } catch (TelegramApiException e) {
             System.err.println("Не удалось отправить сообщение: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    private void sendDocumentWithCaption(String chatId, Attachment att, String caption)
+        throws TelegramApiException {
+
+        ByteArrayInputStream bais = new ByteArrayInputStream(att.getData());
+        InputFile file = new InputFile(bais, att.getFilename());
+
+        SendDocument.SendDocumentBuilder builder = SendDocument.builder()
+            .chatId(chatId)
+            .document(file);
+
+        if (caption != null && !caption.isBlank()) {
+            builder.caption(caption);
+            builder.parseMode("HTML");
+        }
+
+        execute(builder.build());
     }
 
     private String formatEmail(EmailMessage email) {
