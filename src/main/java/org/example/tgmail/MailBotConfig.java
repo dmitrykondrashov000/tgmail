@@ -41,13 +41,15 @@ public class MailBotConfig extends TelegramLongPollingBot {
     private void sendEmail(EmailMessage email) {
         try {
             String chatId = props.telegramChatId();
-            System.out.println(">>> sending to chatId = " + chatId);
+            System.out.println(">>> CHAT_ID_FROM_PROPS = [" + chatId + "]");
 
             SendMessage message = SendMessage.builder()
                 .chatId(props.telegramChatId())
                 .text(formatEmail(email))
                 .parseMode("HTML")
                 .build();
+
+            System.out.println(">>> DEBUG before execute, chatId=" + chatId);
             execute(message);
             // Точка расширения для вложений — здесь добавим sendPhoto/sendDocument.
         }  catch (TelegramApiException e) {
