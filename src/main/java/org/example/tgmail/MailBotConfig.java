@@ -40,6 +40,9 @@ public class MailBotConfig extends TelegramLongPollingBot {
 
     private void sendEmail(EmailMessage email) {
         try {
+            String chatId = props.telegramChatId();
+            System.out.println(">>> sending to chatId = " + chatId);
+
             SendMessage message = SendMessage.builder()
                 .chatId(props.telegramChatId())
                 .text(formatEmail(email))
