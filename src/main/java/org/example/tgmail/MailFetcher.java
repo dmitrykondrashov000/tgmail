@@ -87,6 +87,9 @@ public class MailFetcher {
         return result;
     }
 
+
+
+
     private String stripHtml(String html) {
         if (html == null) return "";
 
@@ -112,6 +115,49 @@ public class MailFetcher {
         return html.trim();
     }
 
+    private String cleanupTildaBody(String text) {
+        if (text == null) return "";
+
+        // Нормализуем переводы строк
+        String normalized = text.replace("\r\n", "\n");
+
+        // Режем всё от фразы "This email is a notification" и ниже
+        int idxNotif = normalized.indexOf("This email is a notification");
+        if (idxNotif >= 0) {
+            normalized = normalized.substring(0, idxNotif);
+        }
+
+        // Если есть блок "Request details:" — вытащим его отдельно
+        int idxReq = normalized.indexOf("Request details:");
+        if (idxReq >= 0) {
+            int idxAddInfo = normalized.indexOf("Additional information:", idxReq);
+            if (idxAddInfo > idxReq) {
+                normalized = normalized.substring(idxReq, idxAddInfo).trim();
+            } else {
+                normalized = normalized.substring(idxReq).trim();
+            }
+        }
+
+        // Убираем лишние пустые строки подряд
+        String[] lines = normalized.split("\n");
+        StringBuilder sb = new StringBuilder();
+        boolean lastEmpty = false;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                if (!lastEmpty) {
+                    sb.append("\n");
+                    lastEmpty = true;
+                }
+            } else {
+                sb.append(trimmed).append("\n");
+                lastEmpty = false;
+            }
+        }
+
+        return sb.toString().trim();
+    }
+
     private EmailMessage toEmailMessage(Message msg) throws Exception {
         // ===== ТЕМА =====
         String rawSubject = msg.getSubject();
@@ -135,6 +181,17 @@ public class MailFetcher {
 
         // ===== ТЕЛО =====
         String body = getBody(msg);
+
+        // если это письмо от Tilda — подчистим мусор
+        Address[] fromArrForBody = msg.getFrom();
+        if (fromArrForBody != null && fromArrForBody.length > 0) {
+            InternetAddress iaFrom = (InternetAddress) fromArrForBody[0];
+            String emailAddr = iaFrom.getAddress();
+            if (emailAddr != null && emailAddr.toLowerCase().contains("tilda.ws")) {
+                body = cleanupTildaBody(body);
+            }
+        }
+
 
         // ===== ВЛОЖЕНИЯ =====
         List<Attachment> attachments = getAttachments(msg);
@@ -185,6 +242,8 @@ public class MailFetcher {
 
         return "(вложение / без текста)";
     }
+
+
 
     private List<Attachment> getAttachments(Message msg) throws Exception {
         List<Attachment> list = new ArrayList<>();
