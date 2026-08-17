@@ -87,6 +87,31 @@ public class MailFetcher {
         return result;
     }
 
+    private String stripHtml(String html) {
+        if (html == null) return "";
+
+        // убираем head
+        html = html.replaceAll("(?is)<head.*?</head>", "");
+        // стили/скрипты
+        html = html.replaceAll("(?is)<style.*?</style>", "");
+        html = html.replaceAll("(?is)<script.*?</script>", "");
+
+        // заменяем переносы строк
+        html = html.replaceAll("(?i)<br\\s*/?>", "\n");
+        html = html.replaceAll("(?i)</p>", "\n");
+
+        // сносим все остальные теги
+        html = html.replaceAll("(?s)<[^>]+>", "");
+
+        // популярные HTML‑сущности
+        html = html.replace("&nbsp;", " ");
+        html = html.replace("&amp;", "&");
+        html = html.replace("&lt;", "<");
+        html = html.replace("&gt;", ">");
+
+        return html.trim();
+    }
+
     private EmailMessage toEmailMessage(Message msg) throws Exception {
         // ===== ТЕМА =====
         String rawSubject = msg.getSubject();
@@ -123,31 +148,41 @@ public class MailFetcher {
 
     private String getBody(Message msg) throws Exception {
         Object content = msg.getContent();
+
+        // Если это просто строка
         if (content instanceof String) {
-            return (String) content;
+            String s = (String) content;
+            String ct = msg.getContentType() == null ? "" : msg.getContentType().toLowerCase();
+            if (ct.startsWith("text/html")) {
+                return stripHtml(s);
+            }
+            return s;
         }
+
         if (content instanceof Multipart) {
             Multipart mp = (Multipart) content;
 
-            // Сперва text/plain
+            // Сначала ищем text/plain
             for (int i = 0; i < mp.getCount(); i++) {
                 BodyPart part = mp.getBodyPart(i);
-                String ct = part.getContentType() == null ? "" : part.getContentType();
-                if (ct.toLowerCase().startsWith("text/plain")) {
+                String ct = part.getContentType() == null ? "" : part.getContentType().toLowerCase();
+                if (ct.startsWith("text/plain")) {
                     Object p = part.getContent();
                     if (p instanceof String) return (String) p;
                 }
             }
-            // Потом text/html
+
+            // Потом text/html, но уже через stripHtml
             for (int i = 0; i < mp.getCount(); i++) {
                 BodyPart part = mp.getBodyPart(i);
-                String ct = part.getContentType() == null ? "" : part.getContentType();
-                if (ct.toLowerCase().startsWith("text/html")) {
+                String ct = part.getContentType() == null ? "" : part.getContentType().toLowerCase();
+                if (ct.startsWith("text/html")) {
                     Object p = part.getContent();
-                    if (p instanceof String) return (String) p;
+                    if (p instanceof String) return stripHtml((String) p);
                 }
             }
         }
+
         return "(вложение / без текста)";
     }
 
