@@ -1,5 +1,6 @@
 package org.example.tgmail;
 
+import java.util.ArrayList;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
@@ -7,7 +8,10 @@ import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.api.objects.media.InputMedia;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+import org.telegram.telegrambots.meta.api.methods.send.SendMediaGroup;
+import org.telegram.telegrambots.meta.api.objects.media.InputMediaDocument;
 
 import java.io.ByteArrayInputStream;
 import java.util.List;
@@ -46,31 +50,29 @@ public class MailBotConfig extends TelegramLongPollingBot {
         try {
             List<Attachment> atts = email.getAttachments();
 
-            if (atts.isEmpty()) {
-                SendMessage message = SendMessage.builder()
-                    .chatId(chatId)
-                    .text(formatEmail(email))
-                    .parseMode("HTML")
-                    .build();
-                execute(message);
-            } else {
-                String caption = formatEmail(email);
+            // --- сначала ВСЕГДА шлём одно текстовое сообщение ---
+            String text = formatEmailWithBorders(email);
 
-                Attachment first = atts.get(0);
-                sendDocumentWithCaption(chatId, first, caption);
+            SendMessage message = SendMessage.builder()
+                .chatId(chatId)
+                .text(text)
+                .parseMode("HTML")
+                .build();
 
-                for (int i = 1; i < atts.size(); i++) {
-                    sendDocumentWithCaption(chatId, atts.get(i), null);
-                }
+            execute(message);
+
+            // --- затем, если есть вложения, шлём их ВСЕ подряд без подписи ---
+            for (Attachment att : atts) {
+                sendDocumentWithCaption(chatId, att, null); // caption = null -> только файл
             }
 
-            // Если всё отправилось — двигаем UID
+            // если всё дошло — помечаем письмо обработанным
             fetcher.markAsSuccessfullySent(email);
 
         } catch (TelegramApiException e) {
-            System.err.println("Не удалось отправить сообщение: " + e.getMessage());
+            System.err.println("Не удалось отправить сообщение в Telegram: " + e.getMessage());
             e.printStackTrace();
-            // НИЧЕГО не помечаем обработанным, UID остаётся прежним => письмо попробуем ещё раз позже
+            // UID не трогаем, чтобы потом попробовать ещё раз
             throw e;
         }
     }
@@ -121,6 +123,17 @@ public class MailBotConfig extends TelegramLongPollingBot {
         } else {
             sb.append("(пустое тело письма)");
         }
+
+        return sb.toString();
+    }
+
+    private String formatEmailWithBorders(EmailMessage email) {
+        String core = formatEmail(email);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("⬇⬇⬇⬇⬇ ПИСЬМО НАЧАЛО ⬇⬇⬇⬇⬇\n\n");
+        sb.append(core).append("\n\n");
+        sb.append("⬆⬆⬆⬆⬆ ПИСЬМО КОНЕЦ  ⬆⬆⬆⬆⬆");
 
         return sb.toString();
     }
