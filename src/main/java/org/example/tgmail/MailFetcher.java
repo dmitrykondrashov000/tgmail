@@ -1,6 +1,14 @@
 package org.example.tgmail;
 
+import com.sun.mail.imap.IMAPFolder;
+import com.sun.mail.imap.IMAPStore;
+import jakarta.annotation.PostConstruct;
 import jakarta.mail.internet.InternetAddress;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
 import org.example.tgmail.PropertiesProvider;
 import org.springframework.stereotype.Component;
 import jakarta.mail.Folder;
@@ -28,23 +36,33 @@ import org.springframework.stereotype.Component;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.*;
-
-/**
- * Читает новые (непрочитанные) письма из ящика по IMAP.
- * Оформлен как Spring-компонент, свойства берёт из {@link PropertiesProvider}.
- */
 @Component
 public class MailFetcher {
 
     private final PropertiesProvider props;
 
-    /** Защита от дублей по Message-ID. */
-    private final Set<String> processedIds = new HashSet<>();
+    // Файл, где храним последний обработанный UID
+    private final File uidStateFile;
+
+    // Последний обработанный UID (в памяти)
+    private volatile long lastProcessedUid = 0L;
 
     public MailFetcher(PropertiesProvider props) {
         this.props = props;
+        this.uidStateFile = new File("last-processed-uid.state");
     }
 
+    @PostConstruct
+    public void init() {
+        this.lastProcessedUid = loadLastProcessedUid();
+        System.out.println("[MailFetcher] lastProcessedUid = " + lastProcessedUid);
+    }
+
+    /**
+     * Возвращает новые письма с UID > lastProcessedUid.
+     * ВАЖНО: здесь lastProcessedUid НЕ обновляется.
+     * Обновление — только через markAsSuccessfullySent() после Телеги.
+     */
     public List<EmailMessage> fetchNewEmails() throws Exception {
         Properties mailProps = new Properties();
         mailProps.put("mail.store.protocol", "imaps");
@@ -58,55 +76,95 @@ public class MailFetcher {
         Session session = Session.getInstance(mailProps);
         List<EmailMessage> result = new ArrayList<>();
 
-        try (Store store = session.getStore("imaps")) {
+        try (IMAPStore store = (IMAPStore) session.getStore("imaps")) {
             store.connect(props.imapHost(), props.imapPort(), props.mailUser(), props.mailPassword());
 
-            try (Folder inbox = store.getFolder("INBOX")) {
+            try (IMAPFolder inbox = (IMAPFolder) store.getFolder("INBOX")) {
                 inbox.open(Folder.READ_WRITE);
 
                 Message[] messages = inbox.getMessages();
-                for (Message msg : messages) {
-                    String id = messageId(msg);
+                if (messages.length == 0) {
+                    return result;
+                }
 
-                    // уже отправляли это письмо в телегу — пропускаем
-                    if (processedIds.contains(id)) {
-                        continue;
+                // сортируем по UID от старых к новым
+                List<Message> sorted = Arrays.asList(messages);
+                sorted.sort(Comparator.comparingLong(m -> {
+                    try {
+                        return inbox.getUID(m);
+                    } catch (MessagingException e) {
+                        return Long.MAX_VALUE;
+                    }
+                }));
+
+                for (Message msg : sorted) {
+                    long uid = inbox.getUID(msg);
+                    if (uid <= lastProcessedUid) {
+                        continue; // это уже обработано ранее
                     }
 
                     EmailMessage email = toEmailMessage(msg);
+                    email.setImapUid(uid);
                     result.add(email);
 
-                    // помечаем как обработанное в нашей памяти
-                    processedIds.add(id);
-
-                    // опционально: пометить письмо прочитанным на сервере
-                    msg.setFlag(Flags.Flag.SEEN, true);
+                    // Не трогаем SEEN, не двигаем lastProcessedUid
+                    // Если очень хочешь, можешь помечать прочитанным:
+                    // msg.setFlag(Flags.Flag.SEEN, true);
                 }
             }
         }
         return result;
     }
 
+    /**
+     * Вызывается из бота, когда письмо уже точно ушло в Telegram.
+     * Тут двигаем lastProcessedUid и сохраняем в файл.
+     */
+    public synchronized void markAsSuccessfullySent(EmailMessage email) {
+        long uid = email.getImapUid();
+        if (uid <= 0) return;
 
+        if (uid > lastProcessedUid) {
+            lastProcessedUid = uid;
+            saveLastProcessedUid(lastProcessedUid);
+            System.out.println("[MailFetcher] updated lastProcessedUid = " + lastProcessedUid);
+        }
+    }
 
+    private long loadLastProcessedUid() {
+        if (!uidStateFile.exists()) return 0L;
+        try (BufferedReader br = new BufferedReader(new FileReader(uidStateFile))) {
+            String line = br.readLine();
+            if (line == null || line.isBlank()) return 0L;
+            return Long.parseLong(line.trim());
+        } catch (Exception e) {
+            System.err.println("Не удалось прочитать lastProcessedUid, начинаем с 0: " + e.getMessage());
+            return 0L;
+        }
+    }
+
+    private void saveLastProcessedUid(long uid) {
+        try (BufferedWriter bw = new BufferedWriter(new FileWriter(uidStateFile, false))) {
+            bw.write(Long.toString(uid));
+        } catch (Exception e) {
+            System.err.println("Не удалось сохранить lastProcessedUid: " + e.getMessage());
+        }
+    }
+
+    // ===== дальше твой парсинг писем (минимально тронут) =====
 
     private String stripHtml(String html) {
         if (html == null) return "";
 
-        // убираем head
         html = html.replaceAll("(?is)<head.*?</head>", "");
-        // стили/скрипты
         html = html.replaceAll("(?is)<style.*?</style>", "");
         html = html.replaceAll("(?is)<script.*?</script>", "");
 
-        // заменяем переносы строк
         html = html.replaceAll("(?i)<br\\s*/?>", "\n");
         html = html.replaceAll("(?i)</p>", "\n");
 
-        // сносим все остальные теги
         html = html.replaceAll("(?s)<[^>]+>", "");
 
-        // популярные HTML‑сущности
         html = html.replace("&nbsp;", " ");
         html = html.replace("&amp;", "&");
         html = html.replace("&lt;", "<");
@@ -118,16 +176,13 @@ public class MailFetcher {
     private String cleanupTildaBody(String text) {
         if (text == null) return "";
 
-        // Нормализуем переводы строк
         String normalized = text.replace("\r\n", "\n");
 
-        // Режем всё от фразы "This email is a notification" и ниже
         int idxNotif = normalized.indexOf("This email is a notification");
         if (idxNotif >= 0) {
             normalized = normalized.substring(0, idxNotif);
         }
 
-        // Если есть блок "Request details:" — вытащим его отдельно
         int idxReq = normalized.indexOf("Request details:");
         if (idxReq >= 0) {
             int idxAddInfo = normalized.indexOf("Additional information:", idxReq);
@@ -138,7 +193,6 @@ public class MailFetcher {
             }
         }
 
-        // Убираем лишние пустые строки подряд
         String[] lines = normalized.split("\n");
         StringBuilder sb = new StringBuilder();
         boolean lastEmpty = false;
@@ -159,11 +213,9 @@ public class MailFetcher {
     }
 
     private EmailMessage toEmailMessage(Message msg) throws Exception {
-        // ===== ТЕМА =====
         String rawSubject = msg.getSubject();
         String subject = (rawSubject == null) ? "(без темы)" : decode(rawSubject);
 
-        // ===== ОТПРАВИТЕЛЬ =====
         Address[] fromArr = msg.getFrom();
         String from;
         if (fromArr == null || fromArr.length == 0) {
@@ -179,10 +231,8 @@ public class MailFetcher {
             }
         }
 
-        // ===== ТЕЛО =====
         String body = getBody(msg);
 
-        // если это письмо от Tilda — подчистим мусор
         Address[] fromArrForBody = msg.getFrom();
         if (fromArrForBody != null && fromArrForBody.length > 0) {
             InternetAddress iaFrom = (InternetAddress) fromArrForBody[0];
@@ -192,8 +242,6 @@ public class MailFetcher {
             }
         }
 
-
-        // ===== ВЛОЖЕНИЯ =====
         List<Attachment> attachments = getAttachments(msg);
 
         EmailMessage emailMessage = new EmailMessage(subject, from, body);
@@ -206,7 +254,6 @@ public class MailFetcher {
     private String getBody(Message msg) throws Exception {
         Object content = msg.getContent();
 
-        // Если это просто строка
         if (content instanceof String) {
             String s = (String) content;
             String ct = msg.getContentType() == null ? "" : msg.getContentType().toLowerCase();
@@ -219,7 +266,6 @@ public class MailFetcher {
         if (content instanceof Multipart) {
             Multipart mp = (Multipart) content;
 
-            // Сначала ищем text/plain
             for (int i = 0; i < mp.getCount(); i++) {
                 BodyPart part = mp.getBodyPart(i);
                 String ct = part.getContentType() == null ? "" : part.getContentType().toLowerCase();
@@ -229,7 +275,6 @@ public class MailFetcher {
                 }
             }
 
-            // Потом text/html, но уже через stripHtml
             for (int i = 0; i < mp.getCount(); i++) {
                 BodyPart part = mp.getBodyPart(i);
                 String ct = part.getContentType() == null ? "" : part.getContentType().toLowerCase();
@@ -242,8 +287,6 @@ public class MailFetcher {
 
         return "(вложение / без текста)";
     }
-
-
 
     private List<Attachment> getAttachments(Message msg) throws Exception {
         List<Attachment> list = new ArrayList<>();
@@ -292,20 +335,6 @@ public class MailFetcher {
                 baos.write(buf, 0, r);
             }
             return baos.toByteArray();
-        }
-    }
-
-    private String messageId(Message msg) {
-        try {
-            String[] id = msg.getHeader("Message-ID");
-            if (id != null && id.length > 0) return id[0];
-        } catch (Exception ignore) {
-            // fallback ниже
-        }
-        try {
-            return msg.getSubject() + "|" + msg.getSentDate();
-        } catch (Exception e) {
-            return msg.toString();
         }
     }
 

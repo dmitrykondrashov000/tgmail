@@ -27,26 +27,26 @@ public class MailBotConfig extends TelegramLongPollingBot {
         this.fetcher = fetcher;
     }
 
-    // Spring вызывает этот метод по расписанию
     @Scheduled(fixedDelayString = "${mail.poll-interval-seconds:60}000")
     public void checkMailAndForward() {
         try {
             List<EmailMessage> emails = fetcher.fetchNewEmails();
             for (EmailMessage email : emails) {
-                sendEmail(email);
+                // ВАЖНО: если тут что-то упадёт — markAsSuccessfullySent НЕ вызовется
+                sendEmailAndMark(email);
             }
         } catch (Exception e) {
             System.err.println("Ошибка при проверке почты: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private void sendEmail(EmailMessage email) {
+    private void sendEmailAndMark(EmailMessage email) throws Exception {
         String chatId = props.telegramChatId();
         try {
             List<Attachment> atts = email.getAttachments();
 
             if (atts.isEmpty()) {
-                // --- нет вложений: обычное текстовое сообщение ---
                 SendMessage message = SendMessage.builder()
                     .chatId(chatId)
                     .text(formatEmail(email))
@@ -54,22 +54,24 @@ public class MailBotConfig extends TelegramLongPollingBot {
                     .build();
                 execute(message);
             } else {
-                // --- есть вложения: первую шлём с caption, текст отдельно не посылаем ---
-                String caption = formatEmail(email); // тот же формат: От/Тема/Тело
+                String caption = formatEmail(email);
 
-                // первое вложение — с подписью
                 Attachment first = atts.get(0);
                 sendDocumentWithCaption(chatId, first, caption);
 
-                // остальные вложения — без подписи
                 for (int i = 1; i < atts.size(); i++) {
                     sendDocumentWithCaption(chatId, atts.get(i), null);
                 }
             }
 
+            // Если всё отправилось — двигаем UID
+            fetcher.markAsSuccessfullySent(email);
+
         } catch (TelegramApiException e) {
             System.err.println("Не удалось отправить сообщение: " + e.getMessage());
             e.printStackTrace();
+            // НИЧЕГО не помечаем обработанным, UID остаётся прежним => письмо попробуем ещё раз позже
+            throw e;
         }
     }
 
@@ -90,6 +92,7 @@ public class MailBotConfig extends TelegramLongPollingBot {
 
         execute(builder.build());
     }
+
 
     private String formatEmail(EmailMessage email) {
         String from = escape(email.getFrom());
