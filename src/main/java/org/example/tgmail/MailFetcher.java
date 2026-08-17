@@ -64,13 +64,23 @@ public class MailFetcher {
             try (Folder inbox = store.getFolder("INBOX")) {
                 inbox.open(Folder.READ_WRITE);
 
-                for (Message msg : inbox.getMessages()) {
-                    if (msg.isSet(Flags.Flag.SEEN) || processedIds.contains(messageId(msg))) {
+                Message[] messages = inbox.getMessages();
+                for (Message msg : messages) {
+                    String id = messageId(msg);
+
+                    // уже отправляли это письмо в телегу — пропускаем
+                    if (processedIds.contains(id)) {
                         continue;
                     }
+
                     EmailMessage email = toEmailMessage(msg);
                     result.add(email);
-                    processedIds.add(messageId(msg));
+
+                    // помечаем как обработанное в нашей памяти
+                    processedIds.add(id);
+
+                    // опционально: пометить письмо прочитанным на сервере
+                    msg.setFlag(Flags.Flag.SEEN, true);
                 }
             }
         }
