@@ -36,7 +36,7 @@ public class MailBotConfig extends TelegramLongPollingBot {
                 sendEmailAndMark(email);
             }
         } catch (Exception e) {
-            System.err.println("Ошибка при проверке  почты: " + e.getMessage());
+            System.err.println("Ошибка при проверке   почты: " + e.getMessage());
             e.printStackTrace();
         }
     }
