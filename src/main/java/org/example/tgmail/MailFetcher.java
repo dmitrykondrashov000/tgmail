@@ -54,8 +54,8 @@ public class MailFetcher {
 
     @PostConstruct
     public void init() {
-        this.lastProcessedUid = loadLastProcessedUid();
-        System.out.println("[MailFetcher] lastProcessedUid = " + lastProcessedUid);
+        this.lastProcessedUid = initFromMailboxMaxUid();
+        System.out.println("[MailFetcher] lastProcessedUid (from mailbox) = " + lastProcessedUid);
     }
 
     /**
@@ -131,16 +131,40 @@ public class MailFetcher {
         }
     }
 
-    private long loadLastProcessedUid() {
-        if (!uidStateFile.exists()) return 0L;
-        try (BufferedReader br = new BufferedReader(new FileReader(uidStateFile))) {
-            String line = br.readLine();
-            if (line == null || line.isBlank()) return 0L;
-            return Long.parseLong(line.trim());
+    private long initFromMailboxMaxUid() {
+        long maxUid = 0L;
+        try {
+            Properties mailProps = new Properties();
+            mailProps.put("mail.store.protocol", "imaps");
+            mailProps.put("mail.imaps.host", props.imapHost());
+            mailProps.put("mail.imaps.port", String.valueOf(props.imapPort()));
+            mailProps.put("mail.imaps.ssl.enable", "true");
+            mailProps.put("mail.imaps.ssl.trust", "*");
+            mailProps.put("mail.imaps.connectiontimeout", "10000");
+            mailProps.put("mail.imaps.timeout", "10000");
+
+            Session session = Session.getInstance(mailProps);
+
+            try (IMAPStore store = (IMAPStore) session.getStore("imaps")) {
+                store.connect(props.imapHost(), props.imapPort(), props.mailUser(), props.mailPassword());
+
+                try (IMAPFolder inbox = (IMAPFolder) store.getFolder("INBOX")) {
+                    inbox.open(Folder.READ_ONLY);
+
+                    Message[] messages = inbox.getMessages();
+                    if (messages.length > 0) {
+                        Message last = messages[messages.length - 1];
+                        maxUid = inbox.getUID(last);
+                    }
+                }
+            }
         } catch (Exception e) {
-            System.err.println("Не удалось прочитать lastProcessedUid, начинаем с 0: " + e.getMessage());
-            return 0L;
+            System.err.println("Не удалось инициализировать UID по ящику: " + e.getMessage());
         }
+
+        // не обязательно, но можно сохранять для отладки
+        saveLastProcessedUid(maxUid);
+        return maxUid;
     }
 
     private void saveLastProcessedUid(long uid) {
