@@ -63,56 +63,63 @@ public class MailFetcher {
      * ВАЖНО: здесь lastProcessedUid НЕ обновляется.
      * Обновление — только через markAsSuccessfullySent() после Телеги.
      */
-    public List<EmailMessage> fetchNewEmails() throws Exception {
-        Properties mailProps = new Properties();
-        mailProps.put("mail.store.protocol", "imaps");
-        mailProps.put("mail.imaps.host", props.imapHost());
-        mailProps.put("mail.imaps.port", String.valueOf(props.imapPort()));
-        mailProps.put("mail.imaps.ssl.enable", "true");
-        mailProps.put("mail.imaps.ssl.trust", "*");
-        mailProps.put("mail.imaps.connectiontimeout", "10000");
-        mailProps.put("mail.imaps.timeout", "10000");
-
-        Session session = Session.getInstance(mailProps);
+    public List<EmailMessage> fetchNewEmails() {
         List<EmailMessage> result = new ArrayList<>();
+        try {
+            Properties mailProps = new Properties();
+            mailProps.put("mail.store.protocol", "imaps");
+            mailProps.put("mail.imaps.host", props.imapHost());
+            mailProps.put("mail.imaps.port", String.valueOf(props.imapPort()));
+            mailProps.put("mail.imaps.ssl.enable", "true");
+            mailProps.put("mail.imaps.ssl.trust", "*");
+            mailProps.put("mail.imaps.connectiontimeout", "10000");
+            mailProps.put("mail.imaps.timeout", "10000");
 
-        try (IMAPStore store = (IMAPStore) session.getStore("imaps")) {
-            store.connect(props.imapHost(), props.imapPort(), props.mailUser(), props.mailPassword());
+            Session session = Session.getInstance(mailProps);
 
-            try (IMAPFolder inbox = (IMAPFolder) store.getFolder("INBOX")) {
-                inbox.open(Folder.READ_WRITE);
+            try (IMAPStore store = (IMAPStore) session.getStore("imaps")) {
+                store.connect(props.imapHost(), props.imapPort(), props.mailUser(), props.mailPassword());
 
-                Message[] messages = inbox.getMessages();
-                if (messages.length == 0) {
-                    return result;
-                }
+                try (IMAPFolder inbox = (IMAPFolder) store.getFolder("INBOX")) {
+                    inbox.open(Folder.READ_WRITE);
 
-                // сортируем по UID от старых к новым
-                List<Message> sorted = Arrays.asList(messages);
-                sorted.sort(Comparator.comparingLong(m -> {
-                    try {
-                        return inbox.getUID(m);
-                    } catch (MessagingException e) {
-                        return Long.MAX_VALUE;
-                    }
-                }));
-
-                for (Message msg : sorted) {
-                    long uid = inbox.getUID(msg);
-                    if (uid <= lastProcessedUid) {
-                        continue; // это уже обработано ранее
+                    Message[] messages = inbox.getMessages();
+                    if (messages.length == 0) {
+                        return result;
                     }
 
-                    EmailMessage email = toEmailMessage(msg);
-                    email.setImapUid(uid);
-                    result.add(email);
+                    List<Message> sorted = Arrays.asList(messages);
+                    sorted.sort(Comparator.comparingLong(m -> {
+                        try {
+                            return inbox.getUID(m);
+                        } catch (MessagingException e) {
+                            return Long.MAX_VALUE;
+                        }
+                    }));
 
-                    // Не трогаем SEEN, не двигаем lastProcessedUid
-                    // Если очень хочешь, можешь помечать прочитанным:
-                    // msg.setFlag(Flags.Flag.SEEN, true);
+                    for (Message msg : sorted) {
+                        long uid = inbox.getUID(msg);
+                        if (uid <= lastProcessedUid) {
+                            continue;
+                        }
+
+                        EmailMessage email = toEmailMessage(msg);
+                        email.setImapUid(uid);
+                        result.add(email);
+                    }
                 }
             }
+        } catch (jakarta.mail.FolderClosedException e) {
+            System.err.println("Папка INBOX закрыта почтовым сервером (FolderClosedException): " + e.getMessage());
+            // просто пропускаем этот цикл, на следующем запуске @Scheduled всё откроется заново
+        } catch (MessagingException e) {
+            System.err.println("Ошибка при работе с IMAP: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("Неожиданная ошибка при чтении почты: " + e.getMessage());
+            e.printStackTrace();
         }
+
         return result;
     }
 

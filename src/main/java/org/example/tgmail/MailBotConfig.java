@@ -36,11 +36,13 @@ public class MailBotConfig extends TelegramLongPollingBot {
         try {
             List<EmailMessage> emails = fetcher.fetchNewEmails();
             for (EmailMessage email : emails) {
-                // ВАЖНО: если тут что-то упадёт — markAsSuccessfullySent НЕ вызовется
                 sendEmailAndMark(email);
             }
+        } catch (TelegramApiException e) {
+            System.err.println("Не удалось отправить сообщение в Telegram: " + e.getMessage());
+            e.printStackTrace();
         } catch (Exception e) {
-            System.err.println("Ошибка при проверке   почты: " + e.getMessage());
+            System.err.println("Неожиданная ошибка при проверке почты: " + e.getMessage());
             e.printStackTrace();
         }
     }
